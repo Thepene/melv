@@ -23,6 +23,19 @@ try {
             }
         }
     }
+
+    $userCount = (int) $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
+    if ($userCount === 0) {
+        $defaultPassword = password_hash('Admin123!', PASSWORD_DEFAULT);
+        $stmt = $pdo->prepare('INSERT INTO users (full_name, username, email, password, role) VALUES (?, ?, ?, ?, ?)');
+        $stmt->execute([
+            'System Administrator',
+            'admin',
+            'admin@inventory.local',
+            $defaultPassword,
+            'admin'
+        ]);
+    }
 } catch (PDOException $e) {
     die('Database connection failed: ' . $e->getMessage());
 }
