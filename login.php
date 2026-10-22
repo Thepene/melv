@@ -25,15 +25,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
             $error = 'Invalid email format.';
         } else {
-            $check = $pdo->prepare('SELECT id FROM users WHERE username = ? OR email = ?');
-            $check->execute([$username, $email]);
+            $users = loadJsonStore('users', []);
+            foreach ($users as $user) {
+                if (($user['username'] ?? '') === $username || ($user['email'] ?? '') === $email) {
+                    $error = 'Username or email already exists.';
+                    break;
+                }
+            }
 
-            if ($check->rowCount() > 0) {
-                $error = 'Username or email already exists.';
-            } else {
-                $hashed = password_hash($password, PASSWORD_DEFAULT);
-                $insert = $pdo->prepare('INSERT INTO users (full_name, username, email, password, role) VALUES (?, ?, ?, ?, ?)');
-                if ($insert->execute([$full_name, $username, $email, $hashed, $role])) {
+            if ($error === '') {
+                $users[] = [
+                    'id' => nextJsonId($users),
+                    'full_name' => $full_name,
+                    'username' => $username,
+                    'email' => $email,
+                    'password' => password_hash($password, PASSWORD_DEFAULT),
+                    'role' => $role,
+                    'created_at' => date('Y-m-d H:i:s'),
+                ];
+
+                if (saveJsonStore('users', $users)) {
                     $success = 'Registration successful. You can now log in.';
                 } else {
                     $error = 'Registration failed. Please try again.';
@@ -49,20 +60,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($username === '' || $password === '') {
             $error = 'Username and password are required.';
         } else {
-            $stmt = $pdo->prepare('SELECT id, full_name, username, role, password FROM users WHERE username = ? OR email = ? LIMIT 1');
-            $stmt->execute([$username, $username]);
-            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            $users = loadJsonStore('users', []);
+            $matchedUser = null;
 
-            if ($user && password_verify($password, $user['password'])) {
-                $_SESSION['user_id'] = (int)$user['id'];
-                $_SESSION['username'] = $user['username'];
-                $_SESSION['full_name'] = $user['full_name'];
-                $_SESSION['role'] = $user['role'];
+            foreach ($users as $user) {
+                if (($user['username'] ?? '') === $username || ($user['email'] ?? '') === $username) {
+                    $matchedUser = $user;
+                    break;
+                }
+            }
+
+            if ($matchedUser && password_verify($password, $matchedUser['password'])) {
+                $_SESSION['user_id'] = (int) $matchedUser['id'];
+                $_SESSION['username'] = $matchedUser['username'];
+                $_SESSION['full_name'] = $matchedUser['full_name'];
+                $_SESSION['role'] = $matchedUser['role'];
                 header('Location: dashboard.php');
                 exit();
-            } else {
-                $error = 'Invalid username/email or password.';
             }
+
+            $error = 'Invalid username/email or password.';
         }
     }
 }

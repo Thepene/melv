@@ -21,48 +21,101 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($name === '' || $sku === '') {
             $productMessage = 'Product name and SKU are required.';
         } else {
-            try {
-                $stmt = $pdo->prepare('INSERT INTO products (name, sku, category, price) VALUES (?, ?, ?, ?)');
-                $stmt->execute([$name, $sku, $category, $price]);
+            $products = loadJsonStore('products', []);
+            $products[] = [
+                'id' => nextJsonId($products),
+                'name' => $name,
+                'sku' => $sku,
+                'category' => $category,
+                'price' => $price,
+                'created_at' => date('Y-m-d H:i:s'),
+            ];
+
+            if (saveJsonStore('products', $products)) {
                 $productMessage = 'Product added successfully.';
-            } catch (PDOException $e) {
-                $productMessage = 'Error: ' . $e->getMessage();
+            } else {
+                $productMessage = 'Unable to save product.';
             }
         }
     }
 
     if (isset($_POST['add_transaction'])) {
-        $product_id = $_POST['product_id'] ?? '';
+        $product_id = (int) ($_POST['product_id'] ?? 0);
         $type = $_POST['type'] ?? 'IN';
-        $quantity = (int)($_POST['quantity'] ?? 0);
+        $quantity = (int) ($_POST['quantity'] ?? 0);
         $reference_no = trim($_POST['reference_no'] ?? '');
         $notes = trim($_POST['notes'] ?? '');
 
-        if ($product_id === '' || $quantity <= 0) {
+        if ($product_id <= 0 || $quantity <= 0) {
             $transactionError = 'Please select a product and enter a valid quantity.';
         } else {
-            $stockCheck = $pdo->prepare('SELECT COALESCE(SUM(CASE WHEN type = "IN" THEN quantity ELSE -quantity END), 0) AS stock FROM stock_transactions WHERE product_id = ?');
-            $stockCheck->execute([$product_id]);
-            $currentStock = (int)$stockCheck->fetchColumn();
+            $transactions = loadJsonStore('stock_transactions', []);
+            $currentStock = inventoryStockForProduct($product_id, $transactions);
 
             if ($type === 'OUT' && $currentStock < $quantity) {
                 $transactionError = 'Not enough stock available for this outgoing transaction.';
             } else {
-                try {
-                    $stmt = $pdo->prepare('INSERT INTO stock_transactions (product_id, type, quantity, reference_no, notes) VALUES (?, ?, ?, ?, ?)');
-                    $stmt->execute([$product_id, $type, $quantity, $reference_no, $notes]);
+                $transactions[] = [
+                    'id' => nextJsonId($transactions),
+                    'product_id' => $product_id,
+                    'type' => $type,
+                    'quantity' => $quantity,
+                    'reference_no' => $reference_no,
+                    'notes' => $notes,
+                    'created_at' => date('Y-m-d H:i:s'),
+                ];
+
+                if (saveJsonStore('stock_transactions', $transactions)) {
                     $transactionMessage = 'Stock transaction recorded successfully.';
-                } catch (PDOException $e) {
-                    $transactionError = 'Error: ' . $e->getMessage();
+                } else {
+                    $transactionError = 'Unable to save transaction.';
                 }
             }
         }
     }
 }
 
-$products = $pdo->query('SELECT p.id, p.name, p.sku, p.category, p.price, COALESCE(SUM(CASE WHEN st.type = "IN" THEN st.quantity ELSE -st.quantity END), 0) AS stock FROM products p LEFT JOIN stock_transactions st ON st.product_id = p.id GROUP BY p.id, p.name, p.sku, p.category, p.price ORDER BY p.name ASC')->fetchAll(PDO::FETCH_ASSOC);
+$products = loadJsonStore('products', []);
+$transactions = loadJsonStore('stock_transactions', []);
+$productRows = [];
 
-$transactions = $pdo->query('SELECT st.*, p.name AS product_name FROM stock_transactions st JOIN products p ON p.id = st.product_id ORDER BY st.created_at DESC')->fetchAll(PDO::FETCH_ASSOC);
+foreach ($products as $product) {
+    $productId = (int) ($product['id'] ?? 0);
+    $productRows[] = [
+        'id' => $productId,
+        'name' => $product['name'] ?? '',
+        'sku' => $product['sku'] ?? '',
+        'category' => $product['category'] ?? '',
+        'price' => $product['price'] ?? 0,
+        'stock' => inventoryStockForProduct($productId, $transactions),
+    ];
+}
+
+$transactionRows = [];
+foreach ($transactions as $transaction) {
+    $productId = (int) ($transaction['product_id'] ?? 0);
+    $productName = '';
+    foreach ($products as $product) {
+        if ((int) ($product['id'] ?? 0) === $productId) {
+            $productName = $product['name'] ?? '';
+            break;
+        }
+    }
+
+    $transactionRows[] = [
+        'id' => $transaction['id'] ?? 0,
+        'product_name' => $productName,
+        'type' => $transaction['type'] ?? 'IN',
+        'quantity' => $transaction['quantity'] ?? 0,
+        'reference_no' => $transaction['reference_no'] ?? '',
+        'notes' => $transaction['notes'] ?? '',
+        'created_at' => $transaction['created_at'] ?? '',
+    ];
+}
+
+usort($transactionRows, static function ($a, $b) {
+    return strcmp(($b['created_at'] ?? ''), ($a['created_at'] ?? ''));
+});
 ?>
 
 <!DOCTYPE html>
@@ -135,8 +188,8 @@ $transactions = $pdo->query('SELECT st.*, p.name AS product_name FROM stock_tran
                 <form method="POST">
                     <select name="product_id" required>
                         <option value="">Select Product</option>
-                        <?php foreach ($products as $p): ?>
-                            <option value="<?php echo $p['id']; ?>"><?php echo htmlspecialchars($p['name']); ?> (SKU: <?php echo htmlspecialchars($p['sku']); ?>)</option>
+                        <?php foreach ($productRows as $p): ?>
+                            <option value="<?php echo (int) $p['id']; ?>"><?php echo htmlspecialchars($p['name']); ?> (SKU: <?php echo htmlspecialchars($p['sku']); ?>)</option>
                         <?php endforeach; ?>
                     </select>
 
@@ -166,14 +219,14 @@ $transactions = $pdo->query('SELECT st.*, p.name AS product_name FROM stock_tran
                     </tr>
                 </thead>
                 <tbody>
-                    <?php if (count($products) > 0): ?>
-                        <?php foreach ($products as $product): ?>
+                    <?php if (count($productRows) > 0): ?>
+                        <?php foreach ($productRows as $product): ?>
                             <tr>
                                 <td><?php echo htmlspecialchars($product['name']); ?></td>
                                 <td><?php echo htmlspecialchars($product['sku']); ?></td>
                                 <td><?php echo htmlspecialchars($product['category'] ?: '-'); ?></td>
-                                <td>$<?php echo number_format((float)$product['price'], 2); ?></td>
-                                <td class="<?php echo $product['stock'] > 0 ? 'stock-green' : 'stock-red'; ?>"><?php echo (int)$product['stock']; ?></td>
+                                <td>$<?php echo number_format((float) $product['price'], 2); ?></td>
+                                <td class="<?php echo $product['stock'] > 0 ? 'stock-green' : 'stock-red'; ?>"><?php echo (int) $product['stock']; ?></td>
                             </tr>
                         <?php endforeach; ?>
                     <?php else: ?>
@@ -197,13 +250,13 @@ $transactions = $pdo->query('SELECT st.*, p.name AS product_name FROM stock_tran
                     </tr>
                 </thead>
                 <tbody>
-                    <?php if (count($transactions) > 0): ?>
-                        <?php foreach ($transactions as $t): ?>
+                    <?php if (count($transactionRows) > 0): ?>
+                        <?php foreach ($transactionRows as $t): ?>
                             <tr>
                                 <td><?php echo htmlspecialchars($t['created_at']); ?></td>
                                 <td><?php echo htmlspecialchars($t['product_name']); ?></td>
                                 <td><?php echo $t['type'] === 'IN' ? 'Incoming' : 'Outgoing'; ?></td>
-                                <td><?php echo (int)$t['quantity']; ?></td>
+                                <td><?php echo (int) $t['quantity']; ?></td>
                                 <td><?php echo htmlspecialchars($t['reference_no'] ?: '-'); ?></td>
                                 <td><?php echo htmlspecialchars($t['notes'] ?: '-'); ?></td>
                             </tr>

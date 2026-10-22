@@ -19,6 +19,7 @@ $editId = $_GET['edit'] ?? null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
+    $suppliers = loadJsonStore('suppliers', []);
 
     if ($action === 'add_supplier') {
         $name = trim($_POST['name'] ?? '');
@@ -32,14 +33,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit();
         }
 
-        $stmt = $pdo->prepare('INSERT INTO suppliers (name, contact_name, phone, email, address) VALUES (?, ?, ?, ?, ?)');
-        $stmt->execute([$name, $contactName, $phone, $email, $address]);
+        $suppliers[] = [
+            'id' => nextJsonId($suppliers),
+            'name' => $name,
+            'contact_name' => $contactName,
+            'phone' => $phone,
+            'email' => $email,
+            'address' => $address,
+            'created_at' => date('Y-m-d H:i:s'),
+        ];
+
+        saveJsonStore('suppliers', $suppliers);
         header('Location: suppliers.php?notice=supplier_added');
         exit();
     }
 
     if ($action === 'update_supplier') {
-        $id = (int)($_POST['supplier_id'] ?? 0);
+        $id = (int) ($_POST['supplier_id'] ?? 0);
         $name = trim($_POST['name'] ?? '');
         $contactName = trim($_POST['contact_name'] ?? '');
         $phone = trim($_POST['phone'] ?? '');
@@ -51,16 +61,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit();
         }
 
-        $stmt = $pdo->prepare('UPDATE suppliers SET name = ?, contact_name = ?, phone = ?, email = ?, address = ? WHERE id = ?');
-        $stmt->execute([$name, $contactName, $phone, $email, $address, $id]);
+        foreach ($suppliers as $index => $supplier) {
+            if ((int) ($supplier['id'] ?? 0) === $id) {
+                $suppliers[$index] = [
+                    'id' => $id,
+                    'name' => $name,
+                    'contact_name' => $contactName,
+                    'phone' => $phone,
+                    'email' => $email,
+                    'address' => $address,
+                    'created_at' => $supplier['created_at'] ?? date('Y-m-d H:i:s'),
+                ];
+                break;
+            }
+        }
+
+        saveJsonStore('suppliers', $suppliers);
         header('Location: suppliers.php?notice=supplier_updated');
         exit();
     }
 
     if ($action === 'delete_supplier') {
-        $id = (int)($_POST['supplier_id'] ?? 0);
+        $id = (int) ($_POST['supplier_id'] ?? 0);
         if ($id > 0) {
-            $pdo->prepare('DELETE FROM suppliers WHERE id = ?')->execute([$id]);
+            $updatedSuppliers = [];
+            foreach ($suppliers as $supplier) {
+                if ((int) ($supplier['id'] ?? 0) !== $id) {
+                    $updatedSuppliers[] = $supplier;
+                }
+            }
+            saveJsonStore('suppliers', $updatedSuppliers);
             header('Location: suppliers.php?notice=supplier_deleted');
             exit();
         }
@@ -68,14 +98,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 if ($editId !== null) {
-    $supplier = $pdo->prepare('SELECT * FROM suppliers WHERE id = ?');
-    $supplier->execute([(int)$editId]);
-    $supplier = $supplier->fetch(PDO::FETCH_ASSOC);
+    $suppliers = loadJsonStore('suppliers', []);
+    $supplier = null;
+    foreach ($suppliers as $row) {
+        if ((int) ($row['id'] ?? 0) === (int) $editId) {
+            $supplier = $row;
+            break;
+        }
+    }
 } else {
     $supplier = null;
 }
 
-$suppliers = $pdo->query('SELECT * FROM suppliers ORDER BY name ASC')->fetchAll(PDO::FETCH_ASSOC);
+$suppliers = loadJsonStore('suppliers', []);
+usort($suppliers, static function ($a, $b) {
+    return strcasecmp($a['name'] ?? '', $b['name'] ?? '');
+});
 ?>
 
 <!DOCTYPE html>
@@ -139,7 +177,7 @@ $suppliers = $pdo->query('SELECT * FROM suppliers ORDER BY name ASC')->fetchAll(
                 <form method="POST" class="form-grid">
                     <input type="hidden" name="action" value="<?php echo $supplier ? 'update_supplier' : 'add_supplier'; ?>">
                     <?php if ($supplier): ?>
-                        <input type="hidden" name="supplier_id" value="<?php echo (int)$supplier['id']; ?>">
+                        <input type="hidden" name="supplier_id" value="<?php echo (int) $supplier['id']; ?>">
                     <?php endif; ?>
                     <input type="text" name="name" placeholder="Supplier name" value="<?php echo htmlspecialchars($supplier['name'] ?? ''); ?>" required>
                     <input type="text" name="contact_name" placeholder="Contact name" value="<?php echo htmlspecialchars($supplier['contact_name'] ?? ''); ?>">
@@ -172,10 +210,10 @@ $suppliers = $pdo->query('SELECT * FROM suppliers ORDER BY name ASC')->fetchAll(
                                     <td><?php echo htmlspecialchars($row['email'] ?: '-'); ?></td>
                                     <td>
                                         <div class="actions">
-                                            <a class="mini-btn edit" href="suppliers.php?edit=<?php echo (int)$row['id']; ?>">Edit</a>
+                                            <a class="mini-btn edit" href="suppliers.php?edit=<?php echo (int) $row['id']; ?>">Edit</a>
                                             <form method="POST" style="display:inline;" onsubmit="return confirm('Delete supplier?');">
                                                 <input type="hidden" name="action" value="delete_supplier">
-                                                <input type="hidden" name="supplier_id" value="<?php echo (int)$row['id']; ?>">
+                                                <input type="hidden" name="supplier_id" value="<?php echo (int) $row['id']; ?>">
                                                 <button type="submit" class="mini-btn delete">Delete</button>
                                             </form>
                                         </div>

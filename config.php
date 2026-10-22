@@ -4,39 +4,90 @@ if (!is_dir($dbDir)) {
     mkdir($dbDir, 0777, true);
 }
 
-$dbPath = $dbDir . '/inventory.db';
+function jsonStorePath(string $name): string
+{
+    return __DIR__ . '/database/' . $name . '.json';
+}
 
-try {
-    $pdo = new PDO('sqlite:' . $dbPath, null, null, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ]);
+function loadJsonStore(string $name, array $default = []): array
+{
+    $file = jsonStorePath($name);
 
-    $pdo->exec('PRAGMA foreign_keys = ON;');
+    if (!file_exists($file)) {
+        saveJsonStore($name, $default);
+        return $default;
+    }
 
-    $schema = file_get_contents(__DIR__ . '/db.sql');
-    if ($schema !== false && trim($schema) !== '') {
-        foreach (explode(';', $schema) as $statement) {
-            $statement = trim($statement);
-            if ($statement !== '') {
-                $pdo->exec($statement . ';');
-            }
+    $contents = @file_get_contents($file);
+    if ($contents === false || trim($contents) === '') {
+        saveJsonStore($name, $default);
+        return $default;
+    }
+
+    $data = json_decode($contents, true);
+    return is_array($data) ? $data : $default;
+}
+
+function saveJsonStore(string $name, array $data): bool
+{
+    $file = jsonStorePath($name);
+    $encoded = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    if ($encoded === false) {
+        return false;
+    }
+
+    return file_put_contents($file, $encoded . PHP_EOL) !== false;
+}
+
+function nextJsonId(array $items): int
+{
+    $maxId = 0;
+    foreach ($items as $item) {
+        $id = isset($item['id']) ? (int) $item['id'] : 0;
+        if ($id > $maxId) {
+            $maxId = $id;
         }
     }
 
-    $userCount = (int) $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
-    if ($userCount === 0) {
-        $defaultPassword = password_hash('Admin123!', PASSWORD_DEFAULT);
-        $stmt = $pdo->prepare('INSERT INTO users (full_name, username, email, password, role) VALUES (?, ?, ?, ?, ?)');
-        $stmt->execute([
-            'System Administrator',
-            'admin',
-            'admin@inventory.local',
-            $defaultPassword,
-            'admin'
-        ]);
-    }
-} catch (PDOException $e) {
-    die('Database connection failed: ' . $e->getMessage());
+    return $maxId + 1;
 }
+
+function inventoryStockForProduct(int $productId, array $transactions): int
+{
+    $stock = 0;
+    foreach ($transactions as $transaction) {
+        if ((int) ($transaction['product_id'] ?? 0) !== $productId) {
+            continue;
+        }
+
+        $quantity = (int) ($transaction['quantity'] ?? 0);
+        $stock += (($transaction['type'] ?? 'IN') === 'IN') ? $quantity : -$quantity;
+    }
+
+    return $stock;
+}
+
+function ensureJsonDatabase(): void
+{
+    $users = loadJsonStore('users', []);
+    if (empty($users)) {
+        $defaultPassword = password_hash('Admin123!', PASSWORD_DEFAULT);
+        $users[] = [
+            'id' => 1,
+            'full_name' => 'System Administrator',
+            'username' => 'admin',
+            'email' => 'admin@inventory.local',
+            'password' => $defaultPassword,
+            'role' => 'admin',
+            'created_at' => date('Y-m-d H:i:s'),
+        ];
+        saveJsonStore('users', $users);
+    }
+
+    loadJsonStore('suppliers', []);
+    loadJsonStore('products', []);
+    loadJsonStore('stock_transactions', []);
+}
+
+ensureJsonDatabase();
 ?>

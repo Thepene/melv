@@ -7,13 +7,29 @@ if (!isset($_SESSION['user_id'])) {
     exit();
 }
 
-$rows = $pdo->query("SELECT p.name, p.sku, p.category, s.name AS supplier_name, p.price,
-    COALESCE(SUM(CASE WHEN st.type = 'IN' THEN st.quantity ELSE -st.quantity END), 0) AS stock
-    FROM products p
-    LEFT JOIN suppliers s ON s.id = p.supplier_id
-    LEFT JOIN stock_transactions st ON st.product_id = p.id
-    GROUP BY p.id, p.name, p.sku, p.category, s.name, p.price
-    ORDER BY p.name ASC")->fetchAll(PDO::FETCH_ASSOC);
+$products = loadJsonStore('products', []);
+$transactions = loadJsonStore('stock_transactions', []);
+$suppliers = loadJsonStore('suppliers', []);
+$rows = [];
+
+foreach ($products as $product) {
+    $supplierName = '';
+    foreach ($suppliers as $supplier) {
+        if ((int) ($supplier['id'] ?? 0) === (int) ($product['supplier_id'] ?? 0)) {
+            $supplierName = $supplier['name'] ?? '';
+            break;
+        }
+    }
+
+    $rows[] = [
+        'name' => $product['name'] ?? '',
+        'sku' => $product['sku'] ?? '',
+        'category' => $product['category'] ?? '',
+        'supplier_name' => $supplierName,
+        'price' => $product['price'] ?? 0,
+        'stock' => inventoryStockForProduct((int) ($product['id'] ?? 0), $transactions),
+    ];
+}
 
 header('Content-Type: text/csv; charset=utf-8');
 header('Content-Disposition: attachment; filename="inventory_export.csv"');
@@ -27,8 +43,8 @@ foreach ($rows as $row) {
         $row['sku'],
         $row['category'] ?: '',
         $row['supplier_name'] ?: '',
-        number_format((float)$row['price'], 2, '.', ''),
-        (int)$row['stock'],
+        number_format((float) $row['price'], 2, '.', ''),
+        (int) $row['stock'],
     ]);
 }
 
