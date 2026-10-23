@@ -1,1 +1,10 @@
-8.5.12
+{
+  "name": "thepene/melv",
+  "description": "Inventory management system built with PHP 8 and MySQL",
+  "require": {
+    "php": ">=8.1"
+  },
+  "config": {
+    "sort-packages": true
+  }
+}
