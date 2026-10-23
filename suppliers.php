@@ -157,7 +157,10 @@ usort($suppliers, static function ($a, $b) {
             <div class="nav">
                 <a href="dashboard.php">Dashboard</a>
                 <a href="inventory.php">Inventory</a>
-                <a href="reports.php">Reports</a>
+                <?php if (($_SESSION['role'] ?? 'staff') === 'admin'): ?>
+                    <a href="admin_dashboard.php">Admin Monitoring</a>
+                <?php endif; ?>
+                <a href="logout.php">Logout</a>
             </div>
         </div>
     </header>
