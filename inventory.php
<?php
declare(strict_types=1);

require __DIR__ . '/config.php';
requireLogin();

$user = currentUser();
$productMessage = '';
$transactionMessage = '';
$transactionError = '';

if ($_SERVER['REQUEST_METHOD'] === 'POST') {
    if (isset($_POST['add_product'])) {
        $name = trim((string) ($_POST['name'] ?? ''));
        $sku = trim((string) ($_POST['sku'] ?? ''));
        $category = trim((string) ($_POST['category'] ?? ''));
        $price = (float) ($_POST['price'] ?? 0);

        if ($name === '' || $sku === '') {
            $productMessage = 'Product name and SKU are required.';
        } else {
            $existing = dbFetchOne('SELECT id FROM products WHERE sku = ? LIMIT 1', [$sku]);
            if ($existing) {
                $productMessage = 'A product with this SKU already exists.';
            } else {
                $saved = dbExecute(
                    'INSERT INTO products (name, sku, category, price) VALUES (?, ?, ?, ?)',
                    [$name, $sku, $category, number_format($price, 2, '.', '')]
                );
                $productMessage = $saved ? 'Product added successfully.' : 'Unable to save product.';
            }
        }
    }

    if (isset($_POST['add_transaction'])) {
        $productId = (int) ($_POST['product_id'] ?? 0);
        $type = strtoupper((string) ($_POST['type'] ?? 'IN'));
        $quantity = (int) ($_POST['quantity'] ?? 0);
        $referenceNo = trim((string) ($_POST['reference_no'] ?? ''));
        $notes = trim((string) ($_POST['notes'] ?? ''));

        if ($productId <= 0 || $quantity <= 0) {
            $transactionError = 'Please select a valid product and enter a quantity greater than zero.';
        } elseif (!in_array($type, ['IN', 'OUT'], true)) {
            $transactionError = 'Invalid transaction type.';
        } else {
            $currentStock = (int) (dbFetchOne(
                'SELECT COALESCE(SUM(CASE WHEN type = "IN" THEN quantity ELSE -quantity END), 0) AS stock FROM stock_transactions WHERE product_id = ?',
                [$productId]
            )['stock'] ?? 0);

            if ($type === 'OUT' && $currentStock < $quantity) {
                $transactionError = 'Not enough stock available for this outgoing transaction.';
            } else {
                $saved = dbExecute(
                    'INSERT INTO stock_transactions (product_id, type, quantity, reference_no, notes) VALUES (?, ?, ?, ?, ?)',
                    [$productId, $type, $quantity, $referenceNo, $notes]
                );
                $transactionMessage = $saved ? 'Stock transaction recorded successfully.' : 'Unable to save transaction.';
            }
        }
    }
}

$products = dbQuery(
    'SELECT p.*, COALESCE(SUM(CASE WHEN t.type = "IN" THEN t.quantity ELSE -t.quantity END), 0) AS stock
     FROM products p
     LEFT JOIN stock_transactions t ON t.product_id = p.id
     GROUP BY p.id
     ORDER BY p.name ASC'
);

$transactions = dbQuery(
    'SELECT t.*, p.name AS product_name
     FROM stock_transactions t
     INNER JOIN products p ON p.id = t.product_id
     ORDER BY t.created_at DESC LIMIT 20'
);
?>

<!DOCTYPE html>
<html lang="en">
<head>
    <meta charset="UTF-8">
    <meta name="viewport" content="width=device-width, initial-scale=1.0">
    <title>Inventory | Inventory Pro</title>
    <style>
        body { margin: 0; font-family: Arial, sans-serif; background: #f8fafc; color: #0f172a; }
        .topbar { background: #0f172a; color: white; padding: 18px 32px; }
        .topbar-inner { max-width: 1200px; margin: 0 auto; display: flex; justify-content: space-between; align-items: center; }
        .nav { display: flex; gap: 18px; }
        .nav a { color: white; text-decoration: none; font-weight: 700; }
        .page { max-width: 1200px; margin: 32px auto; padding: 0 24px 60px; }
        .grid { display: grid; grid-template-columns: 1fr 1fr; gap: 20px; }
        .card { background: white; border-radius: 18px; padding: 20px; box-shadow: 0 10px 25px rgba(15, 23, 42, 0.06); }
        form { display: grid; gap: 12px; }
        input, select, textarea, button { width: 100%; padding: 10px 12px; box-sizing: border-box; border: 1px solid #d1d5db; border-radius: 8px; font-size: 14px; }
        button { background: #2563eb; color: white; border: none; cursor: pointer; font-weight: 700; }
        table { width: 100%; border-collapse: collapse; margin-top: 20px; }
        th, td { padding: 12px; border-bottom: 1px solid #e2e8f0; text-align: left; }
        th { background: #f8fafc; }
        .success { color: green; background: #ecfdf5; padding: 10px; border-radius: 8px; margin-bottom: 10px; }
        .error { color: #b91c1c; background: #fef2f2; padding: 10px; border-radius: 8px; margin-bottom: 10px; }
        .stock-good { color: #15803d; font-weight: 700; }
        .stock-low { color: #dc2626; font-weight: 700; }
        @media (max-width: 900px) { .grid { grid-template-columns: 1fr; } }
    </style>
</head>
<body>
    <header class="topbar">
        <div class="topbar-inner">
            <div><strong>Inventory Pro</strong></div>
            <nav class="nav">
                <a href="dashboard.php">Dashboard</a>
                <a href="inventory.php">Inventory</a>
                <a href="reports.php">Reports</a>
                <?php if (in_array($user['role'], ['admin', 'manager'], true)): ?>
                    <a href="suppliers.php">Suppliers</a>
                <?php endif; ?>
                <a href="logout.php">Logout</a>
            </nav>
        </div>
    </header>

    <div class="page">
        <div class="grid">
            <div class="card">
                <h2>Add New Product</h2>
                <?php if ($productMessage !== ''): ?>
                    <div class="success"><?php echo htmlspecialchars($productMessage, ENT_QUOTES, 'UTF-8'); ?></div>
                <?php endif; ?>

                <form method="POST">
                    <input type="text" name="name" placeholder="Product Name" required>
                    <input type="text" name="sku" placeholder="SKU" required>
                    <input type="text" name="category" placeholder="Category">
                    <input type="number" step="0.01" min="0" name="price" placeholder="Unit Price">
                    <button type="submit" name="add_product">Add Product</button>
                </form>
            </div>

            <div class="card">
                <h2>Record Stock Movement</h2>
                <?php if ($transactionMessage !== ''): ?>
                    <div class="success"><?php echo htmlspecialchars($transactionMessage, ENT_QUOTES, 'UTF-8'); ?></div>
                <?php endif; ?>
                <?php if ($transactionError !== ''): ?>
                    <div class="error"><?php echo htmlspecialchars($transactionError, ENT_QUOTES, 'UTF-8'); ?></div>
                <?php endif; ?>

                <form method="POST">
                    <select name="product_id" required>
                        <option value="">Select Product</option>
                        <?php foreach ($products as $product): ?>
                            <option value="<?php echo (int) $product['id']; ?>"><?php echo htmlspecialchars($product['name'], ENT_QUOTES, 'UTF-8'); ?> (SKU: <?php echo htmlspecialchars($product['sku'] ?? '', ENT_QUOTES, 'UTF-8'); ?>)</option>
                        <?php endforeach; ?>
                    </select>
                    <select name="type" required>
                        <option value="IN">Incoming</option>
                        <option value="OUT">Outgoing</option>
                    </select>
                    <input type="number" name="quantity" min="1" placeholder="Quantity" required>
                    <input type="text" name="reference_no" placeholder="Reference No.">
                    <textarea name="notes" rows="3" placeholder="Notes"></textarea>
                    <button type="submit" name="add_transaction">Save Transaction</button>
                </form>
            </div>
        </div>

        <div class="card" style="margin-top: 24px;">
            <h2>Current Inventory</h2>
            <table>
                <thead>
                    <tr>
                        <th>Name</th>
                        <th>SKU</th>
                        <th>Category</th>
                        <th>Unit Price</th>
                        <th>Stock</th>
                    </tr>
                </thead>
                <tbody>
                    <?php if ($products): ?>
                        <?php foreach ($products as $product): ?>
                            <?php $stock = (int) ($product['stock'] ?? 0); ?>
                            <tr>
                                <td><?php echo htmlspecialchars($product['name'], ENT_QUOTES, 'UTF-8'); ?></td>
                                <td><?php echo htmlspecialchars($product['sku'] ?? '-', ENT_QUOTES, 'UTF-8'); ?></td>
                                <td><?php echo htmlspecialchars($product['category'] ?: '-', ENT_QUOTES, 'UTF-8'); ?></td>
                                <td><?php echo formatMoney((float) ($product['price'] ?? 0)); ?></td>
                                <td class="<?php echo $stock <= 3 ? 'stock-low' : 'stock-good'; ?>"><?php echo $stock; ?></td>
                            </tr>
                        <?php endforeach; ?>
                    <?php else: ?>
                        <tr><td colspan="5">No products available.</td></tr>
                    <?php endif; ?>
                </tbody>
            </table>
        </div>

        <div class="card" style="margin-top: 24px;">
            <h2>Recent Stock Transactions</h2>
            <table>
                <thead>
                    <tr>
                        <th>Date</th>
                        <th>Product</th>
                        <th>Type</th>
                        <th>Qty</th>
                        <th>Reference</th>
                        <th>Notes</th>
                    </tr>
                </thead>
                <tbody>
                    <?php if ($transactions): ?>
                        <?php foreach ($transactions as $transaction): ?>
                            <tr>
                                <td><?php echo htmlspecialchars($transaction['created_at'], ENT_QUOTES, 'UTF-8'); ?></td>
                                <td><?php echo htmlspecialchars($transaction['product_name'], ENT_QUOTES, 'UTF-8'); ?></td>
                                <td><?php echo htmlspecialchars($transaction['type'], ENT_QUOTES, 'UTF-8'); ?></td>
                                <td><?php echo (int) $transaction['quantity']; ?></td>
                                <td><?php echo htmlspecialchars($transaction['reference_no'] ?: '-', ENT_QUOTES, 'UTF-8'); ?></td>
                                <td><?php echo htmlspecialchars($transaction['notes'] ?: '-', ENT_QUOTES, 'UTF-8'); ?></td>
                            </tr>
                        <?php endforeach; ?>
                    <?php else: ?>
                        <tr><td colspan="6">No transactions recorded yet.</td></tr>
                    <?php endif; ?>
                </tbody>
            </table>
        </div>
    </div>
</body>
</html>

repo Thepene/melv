@@ -1,0 +1,276 @@
+<?php
+declare(strict_types=1);
+
+require __DIR__ . '/config.php';
+requireLogin();
+
+$user = currentUser();
+
+$productMessage = '';
+$transactionMessage = '';
+$transactionError = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (isset($_POST['add_product'])) {
+        $name = trim((string) ($_POST['name'] ?? ''));
+        $sku = trim((string) ($_POST['sku'] ?? ''));
+        $category = trim((string) ($_POST['category'] ?? ''));
+        $price = (float) ($_POST['price'] ?? 0);
+
+        if ($name === '' || $sku === '') {
+            $productMessage = 'Product name and SKU are required.';
+        } else {
+            $existing = dbFetchOne('SELECT id FROM products WHERE sku = ? LIMIT 1', [$sku]);
+            if ($existing) {
+                $productMessage = 'A product with this SKU already exists.';
+            } else {
+                $success = dbExecute(
+                    'INSERT INTO products (name, sku, category, price) VALUES (?, ?, ?, ?)',
+                    [$name, $sku, $category, number_format($price, 2, '.', '')]
+                );
+
+                $productMessage = $success ? 'Product added successfully.' : 'Unable to save product.';
+            }
+        }
+    }
+
+    if (isset($_POST['add_transaction'])) {
+        $productId = (int) ($_POST['product_id'] ?? 0);
+        $type = strtoupper((string) ($_POST['type'] ?? 'IN'));
+        $quantity = (int) ($_POST['quantity'] ?? 0);
+        $referenceNo = trim((string) ($_POST['reference_no'] ?? ''));
+        $notes = trim((string) ($_POST['notes'] ?? ''));
+
+        if ($productId <= 0 || $quantity <= 0) {
+            $transactionError = 'Please select a valid product and enter a quantity greater than zero.';
+        } elseif (!in_array($type, ['IN', 'OUT'], true)) {
+            $transactionError = 'Invalid transaction type.';
+        } else {
+            $stock = (int) (dbFetchOne('SELECT COALESCE(SUM(CASE WHEN type = "IN" THEN quantity ELSE -quantity END), 0) AS stock FROM stock_transactions WHERE product_id = ?', [$productId])['stock'] ?? 0);
+
+            if ($type === 'OUT' && $stock < $quantity) {
+                $transactionError = 'Not enough stock available for this outgoing transaction.';
+            } else {
+                $saved = dbExecute(
+                    'INSERT INTO stock_transactions (product_id, type, quantity, reference_no, notes) VALUES (?, ?, ?, ?, ?)',
+                    [$productId, $type, $quantity, $referenceNo, $notes]
+                );
+
+                $transactionMessage = $saved ? 'Stock transaction recorded successfully.' : 'Unable to save transaction.';
+            }
+        }
+    }
+}
+
+$products = dbQuery(
+    'SELECT p.*, COALESCE(SUM(CASE WHEN t.type = "IN" THEN t.quantity ELSE -t.quantity END), 0) AS stock
+     FROM products p
+     LEFT JOIN stock_transactions t ON t.product_id = p.id
+     GROUP BY p.id
+     ORDER BY p.name ASC'
+);
+
+$transactionRows = dbQuery(
+    'SELECT t.*, p.name AS product_name
+     FROM stock_transactions t
+     INNER JOIN products p ON p.id = t.product_id
+     ORDER BY t.created_at DESC
+     LIMIT 20'
+);
+
+$summary = [
+    'products' => count($products),
+    'stock_in' => array_sum(array_map(static fn($product) => (int) ($product['stock'] ?? 0), $products)),
+    'low_stock' => count(array_filter($products, static fn($product) => (int) ($product['stock'] ?? 0) <= 3)),
+    'transactions' => count($transactionRows),
+];
+?>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard | Inventory Pro</title>
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; background: #f3f6fb; color: #0f172a; }
+        .topbar { background: #0f172a; color: white; padding: 18px 32px; }
+        .topbar-inner { max-width: 1200px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; }
+        .nav { display: flex; gap: 18px; align-items: center; }
+        .nav a { color: white; text-decoration: none; font-weight: 700; }
+        .nav .logout { color: #fca5a5; }
+        .page { max-width: 1200px; margin: 32px auto; padding: 0 24px 60px; }
+        .welcome { margin-bottom: 24px; }
+        .cards { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .card { background: white; border-radius: 18px; padding: 20px; box-shadow: 0 10px 25px rgba(15, 23, 42, 0.06); }
+        .stat-label { color: #64748b; font-size: 12px; text-transform: uppercase; }
+        .stat-value { font-size: 2rem; font-weight: 700; margin-top: 10px; }
+        .layout { display: grid; grid-template-columns: 1.1fr 1fr; gap: 20px; }
+        form { display: grid; gap: 12px; }
+        input, select, textarea, button { width: 100%; padding: 10px 12px; box-sizing: border-box; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; }
+        button { background: #2563eb; color: white; border: none; cursor: pointer; font-weight: 700; }
+        table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+        th, td { padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: left; }
+        th { background: #f8fafc; }
+        .success { color: green; background: #ecfdf5; padding: 10px; border-radius: 8px; margin-bottom: 10px; }
+        .error { color: #b91c1c; background: #fef2f2; padding: 10px; border-radius: 8px; margin-bottom: 10px; }
+        .stock-good { color: #15803d; font-weight: 700; }
+        .stock-low { color: #dc2626; font-weight: 700; }
+        .muted { color: #64748b; }
+        @media (max-width: 900px) { .cards, .layout { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <div><strong>Inventory Pro</strong></div>
+            <nav class="nav">
+                <a href="dashboard.php">Dashboard</a>
+                <a href="inventory.php">Inventory</a>
+                <a href="reports.php">Reports</a>
+                <?php if (in_array($user['role'], ['admin', 'manager'], true)): ?>
+                    <a href="suppliers.php">Suppliers</a>
+                <?php endif; ?>
+                <a href="logout.php" class="logout">Logout</a>
+            </nav>
+        </div>
+    </header>
+
+    <div class="page">
+        <div class="welcome">
+            <h1>Welcome, <?php echo htmlspecialchars($user['full_name'] ?: $user['username']); ?>!</h1>
+            <div class="muted">Role: <?php echo htmlspecialchars(ucfirst($user['role'])); ?></div>
+        </div>
+
+        <div class="cards">
+            <div class="card">
+                <div class="stat-label">Products</div>
+                <div class="stat-value"><?php echo (int) $summary['products']; ?></div>
+            </div>
+            <div class="card">
+                <div class="stat-label">Stock On Hand</div>
+                <div class="stat-value"><?php echo (int) $summary['stock_in']; ?></div>
+            </div>
+            <div class="card">
+                <div class="stat-label">Low Stock</div>
+                <div class="stat-value"><?php echo (int) $summary['low_stock']; ?></div>
+            </div>
+            <div class="card">
+                <div class="stat-label">Transactions</div>
+                <div class="stat-value"><?php echo (int) $summary['transactions']; ?></div>
+            </div>
+        </div>
+
+        <div class="layout">
+            <div class="card">
+                <h2>Add New Product</h2>
+                <?php if ($productMessage !== ''): ?>
+                    <div class="success"><?php echo htmlspecialchars($productMessage, ENT_QUOTES, 'UTF-8'); ?></div>
+                <?php endif; ?>
+
+                <form method="POST">
+                    <input type="text" name="name" placeholder="Product Name" required>
+                    <input type="text" name="sku" placeholder="SKU" required>
+                    <input type="text" name="category" placeholder="Category">
+                    <input type="number" step="0.01" min="0" name="price" placeholder="Unit Price">
+                    <button type="submit" name="add_product">Add Product</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <h2>Record Stock Movement</h2>
+                <?php if ($transactionMessage !== ''): ?>
+                    <div class="success"><?php echo htmlspecialchars($transactionMessage, ENT_QUOTES, 'UTF-8'); ?></div>
+                <?php endif; ?>
+                <?php if ($transactionError !== ''): ?>
+                    <div class="error"><?php echo htmlspecialchars($transactionError, ENT_QUOTES, 'UTF-8'); ?></div>
+                <?php endif; ?>
+
+                <form method="POST">
+                    <select name="product_id" required>
+                        <option value="">Select Product</option>
+                        <?php foreach ($products as $product): ?>
+                            <option value="<?php echo (int) $product['id']; ?>"><?php echo htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8'); ?> (SKU: <?php echo htmlspecialchars($product['sku'] ?? '', ENT_QUOTES, 'UTF-8'); ?>)</option>
+                        <?php endforeach; ?>
+                    </select>
+                    <select name="type" required>
+                        <option value="IN">Incoming</option>
+                        <option value="OUT">Outgoing</option>
+                    </select>
+                    <input type="number" name="quantity" min="1" placeholder="Quantity" required>
+                    <input type="text" name="reference_no" placeholder="Reference No.">
+                    <textarea name="notes" rows="3" placeholder="Notes"></textarea>
+                    <button type="submit" name="add_transaction">Save Transaction</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card" style="margin-top: 24px;">
+            <h2>Current Inventory</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>SKU</th>
+                        <th>Category</th>
+                        <th>Price</th>
+                        <th>Stock</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if ($products): ?>
+                        <?php foreach ($products as $product): ?>
+                            <?php $stock = (int) ($product['stock'] ?? 0); ?>
+                            <tr>
+                                <td><?php echo htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8'); ?></td>
+                                <td><?php echo htmlspecialchars($product['sku'] ?? '-', ENT_QUOTES, 'UTF-8'); ?></td>
+                                <td><?php echo htmlspecialchars($product['category'] ?: '-', ENT_QUOTES, 'UTF-8'); ?></td>
+                                <td><?php echo formatMoney((float) ($product['price'] ?? 0)); ?></td>
+                                <td class="<?php echo $stock <= 3 ? 'stock-low' : 'stock-good'; ?>"><?php echo $stock; ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <tr><td colspan="5">No products available yet.</td></tr>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="card" style="margin-top: 24px;">
+            <h2>Recent Transactions</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Product</th>
+                        <th>Type</th>
+                        <th>Qty</th>
+                        <th>Reference</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if ($transactionRows): ?>
+                        <?php foreach ($transactionRows as $transaction): ?>
+                            <tr>
+                                <td><?php echo htmlspecialchars($transaction['created_at'], ENT_QUOTES, 'UTF-8'); ?></td>
+                                <td><?php echo htmlspecialchars($transaction['product_name'], ENT_QUOTES, 'UTF-8'); ?></td>
+                                <td><?php echo htmlspecialchars($transaction['type'], ENT_QUOTES, 'UTF-8'); ?></td>
+                                <td><?php echo (int) $transaction['quantity']; ?></td>
+                                <td><?php echo htmlspecialchars($transaction['reference_no'] ?: '-', ENT_QUOTES, 'UTF-8'); ?></td>
+                                <td><?php echo htmlspecialchars($transaction['notes'] ?: '-', ENT_QUOTES, 'UTF-8'); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <tr><td colspan="6">No transactions recorded yet.</td></tr>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
+
+
+"}
+,{

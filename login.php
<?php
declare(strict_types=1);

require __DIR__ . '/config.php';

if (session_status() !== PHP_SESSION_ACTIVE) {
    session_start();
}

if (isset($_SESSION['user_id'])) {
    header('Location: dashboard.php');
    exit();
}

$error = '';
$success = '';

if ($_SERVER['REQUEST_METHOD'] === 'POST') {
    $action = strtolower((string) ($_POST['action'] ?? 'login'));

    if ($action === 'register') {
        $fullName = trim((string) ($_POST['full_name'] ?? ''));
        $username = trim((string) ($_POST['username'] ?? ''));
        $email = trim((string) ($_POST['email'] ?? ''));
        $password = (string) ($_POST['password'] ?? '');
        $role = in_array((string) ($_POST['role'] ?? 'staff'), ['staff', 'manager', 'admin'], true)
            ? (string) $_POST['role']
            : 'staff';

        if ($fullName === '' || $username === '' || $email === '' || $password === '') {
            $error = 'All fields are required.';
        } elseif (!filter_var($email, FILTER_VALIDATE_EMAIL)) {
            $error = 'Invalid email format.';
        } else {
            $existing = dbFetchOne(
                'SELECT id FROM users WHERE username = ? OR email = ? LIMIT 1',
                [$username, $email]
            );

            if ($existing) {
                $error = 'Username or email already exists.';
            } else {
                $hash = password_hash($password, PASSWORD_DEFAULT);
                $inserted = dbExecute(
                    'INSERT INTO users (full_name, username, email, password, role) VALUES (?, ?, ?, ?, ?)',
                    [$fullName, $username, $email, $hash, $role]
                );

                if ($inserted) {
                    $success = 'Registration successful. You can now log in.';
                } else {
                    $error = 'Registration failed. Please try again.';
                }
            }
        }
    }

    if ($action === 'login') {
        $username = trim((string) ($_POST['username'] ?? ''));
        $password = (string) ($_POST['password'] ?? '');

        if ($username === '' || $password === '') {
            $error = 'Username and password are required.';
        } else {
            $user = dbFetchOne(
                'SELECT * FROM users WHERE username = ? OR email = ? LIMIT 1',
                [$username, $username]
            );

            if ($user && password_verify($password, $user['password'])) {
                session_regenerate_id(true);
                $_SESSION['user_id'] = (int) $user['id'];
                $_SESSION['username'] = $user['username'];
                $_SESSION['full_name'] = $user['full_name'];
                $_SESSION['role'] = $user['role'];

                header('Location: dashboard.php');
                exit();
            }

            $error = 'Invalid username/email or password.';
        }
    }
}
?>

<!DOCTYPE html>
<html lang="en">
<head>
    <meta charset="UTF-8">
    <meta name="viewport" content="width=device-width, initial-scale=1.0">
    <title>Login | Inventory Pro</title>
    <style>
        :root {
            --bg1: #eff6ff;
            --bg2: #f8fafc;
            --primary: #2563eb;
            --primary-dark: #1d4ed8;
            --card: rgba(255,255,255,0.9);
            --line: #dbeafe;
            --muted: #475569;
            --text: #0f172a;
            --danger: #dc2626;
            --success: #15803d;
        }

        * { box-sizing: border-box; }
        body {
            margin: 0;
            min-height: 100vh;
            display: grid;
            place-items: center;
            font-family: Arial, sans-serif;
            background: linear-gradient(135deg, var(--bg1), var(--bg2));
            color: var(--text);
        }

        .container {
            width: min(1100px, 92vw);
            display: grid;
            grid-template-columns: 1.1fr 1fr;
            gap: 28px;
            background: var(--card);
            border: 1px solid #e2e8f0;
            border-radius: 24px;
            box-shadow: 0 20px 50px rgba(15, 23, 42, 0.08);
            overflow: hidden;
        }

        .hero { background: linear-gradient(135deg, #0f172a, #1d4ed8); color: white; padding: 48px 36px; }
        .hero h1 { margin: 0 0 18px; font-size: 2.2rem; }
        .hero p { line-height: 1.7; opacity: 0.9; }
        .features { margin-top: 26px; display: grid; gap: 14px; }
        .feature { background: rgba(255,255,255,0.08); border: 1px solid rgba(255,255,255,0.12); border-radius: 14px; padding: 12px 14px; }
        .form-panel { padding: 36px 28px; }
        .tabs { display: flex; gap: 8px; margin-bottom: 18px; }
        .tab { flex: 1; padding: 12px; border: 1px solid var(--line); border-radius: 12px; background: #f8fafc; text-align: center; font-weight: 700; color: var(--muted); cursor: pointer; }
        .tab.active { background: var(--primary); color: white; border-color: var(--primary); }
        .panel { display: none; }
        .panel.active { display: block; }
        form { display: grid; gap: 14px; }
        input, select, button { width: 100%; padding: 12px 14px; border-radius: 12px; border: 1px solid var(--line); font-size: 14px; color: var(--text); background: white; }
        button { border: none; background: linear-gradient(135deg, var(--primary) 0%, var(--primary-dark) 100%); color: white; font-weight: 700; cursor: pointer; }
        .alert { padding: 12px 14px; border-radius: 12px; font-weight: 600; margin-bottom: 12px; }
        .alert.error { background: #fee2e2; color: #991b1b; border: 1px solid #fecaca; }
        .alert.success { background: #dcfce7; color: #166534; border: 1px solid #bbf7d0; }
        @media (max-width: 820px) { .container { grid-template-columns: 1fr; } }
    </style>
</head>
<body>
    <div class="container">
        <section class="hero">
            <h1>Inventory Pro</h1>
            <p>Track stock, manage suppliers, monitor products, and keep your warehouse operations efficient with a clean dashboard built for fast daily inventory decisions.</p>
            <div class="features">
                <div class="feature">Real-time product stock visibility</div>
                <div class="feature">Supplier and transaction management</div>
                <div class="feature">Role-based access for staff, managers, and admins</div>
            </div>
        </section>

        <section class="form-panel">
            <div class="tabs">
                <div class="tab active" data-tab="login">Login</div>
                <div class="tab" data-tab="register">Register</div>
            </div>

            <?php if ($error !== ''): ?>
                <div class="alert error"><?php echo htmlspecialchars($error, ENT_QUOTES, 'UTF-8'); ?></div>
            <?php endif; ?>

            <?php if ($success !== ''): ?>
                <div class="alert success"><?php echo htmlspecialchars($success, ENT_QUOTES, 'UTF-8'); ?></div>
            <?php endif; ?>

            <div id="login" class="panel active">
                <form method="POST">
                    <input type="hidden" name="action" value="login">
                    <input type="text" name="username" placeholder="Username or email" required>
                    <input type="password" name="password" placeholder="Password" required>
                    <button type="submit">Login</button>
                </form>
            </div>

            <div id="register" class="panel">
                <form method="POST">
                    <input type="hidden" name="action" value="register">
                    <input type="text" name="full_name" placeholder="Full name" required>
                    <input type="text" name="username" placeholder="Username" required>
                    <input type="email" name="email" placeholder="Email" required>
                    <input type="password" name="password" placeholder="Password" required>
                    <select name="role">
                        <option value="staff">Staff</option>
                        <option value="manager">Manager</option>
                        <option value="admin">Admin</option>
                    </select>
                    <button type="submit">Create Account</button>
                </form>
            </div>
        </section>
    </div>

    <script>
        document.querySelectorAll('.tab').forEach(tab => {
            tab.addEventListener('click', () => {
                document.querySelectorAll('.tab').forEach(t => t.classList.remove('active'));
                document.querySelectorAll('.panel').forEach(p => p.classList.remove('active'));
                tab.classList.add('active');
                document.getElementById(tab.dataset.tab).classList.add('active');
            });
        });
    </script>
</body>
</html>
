@@ -1,0 +1,261 @@
+<?php
+declare(strict_types=1);
+
+function loadEnvFile(string $path): void
+{
+    if (!is_file($path) || !is_readable($path)) {
+        return;
+    }
+
+    foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        $trimmed = trim($line);
+        if ($trimmed === '' || str_starts_with($trimmed, '#')) {
+            continue;
+        }
+
+        [$key, $value] = array_pad(explode('=', $trimmed, 2), 2, '');
+        $key = trim($key);
+        $value = trim($value);
+
+        if ($key === '') {
+            continue;
+        }
+
+        $_ENV[$key] = $value;
+        putenv($key . '=' . $value);
+    }
+}
+
+loadEnvFile(__DIR__ . '/.env');
+
+function env(string $key, mixed $default = null): mixed
+{
+    if (array_key_exists($key, $_ENV)) {
+        return $_ENV[$key];
+    }
+
+    $value = getenv($key);
+    if ($value !== false) {
+        return $value;
+    }
+
+    return $default;
+}
+
+function getDatabaseConfig(): array
+{
+    return [
+        'host' => env('DB_HOST', '127.0.0.1'),
+        'port' => (int) env('DB_PORT', 3306),
+        'database' => env('DB_NAME', 'melv'),
+        'username' => env('DB_USER', 'root'),
+        'password' => env('DB_PASS', ''),
+        'charset' => env('DB_CHARSET', 'utf8mb4'),
+    ];
+}
+
+function getDatabaseConnection(): PDO
+{
+    static $pdo = null;
+
+    if ($pdo instanceof PDO) {
+        return $pdo;
+    }
+
+    $config = getDatabaseConfig();
+    $dsn = sprintf('mysql:host=%s;port=%d;charset=%s', $config['host'], $config['port'], $config['charset']);
+
+    try {
+        $rootConnection = new PDO(
+            $dsn,
+            $config['username'],
+            $config['password'],
+            [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES => false,
+            ]
+        );
+
+        $rootConnection->exec(sprintf(
+            'CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET %s COLLATE %s_unicode_ci',
+            $config['database'],
+            $config['charset'],
+            $config['charset']
+        ));
+
+        $pdo = new PDO(
+            sprintf(
+                'mysql:host=%s;port=%d;dbname=%s;charset=%s',
+                $config['host'],
+                $config['port'],
+                $config['database'],
+                $config['charset']
+            ),
+            $config['username'],
+            $config['password'],
+            [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_EMULATE_PREPARES => false,
+            ]
+        );
+
+        ensureDatabaseSchema($pdo);
+
+        return $pdo;
+    } catch (Throwable $exception) {
+        throw new RuntimeException('Unable to connect to MySQL: ' . $exception->getMessage(), 0, $exception);
+    }
+}
+
+function ensureDatabaseSchema(PDO $pdo): void
+{
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS `suppliers` (
+            `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `name` VARCHAR(255) NOT NULL,
+            `contact_name` VARCHAR(255) DEFAULT NULL,
+            `phone` VARCHAR(100) DEFAULT NULL,
+            `email` VARCHAR(255) DEFAULT NULL,
+            `address` TEXT DEFAULT NULL,
+            `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS `users` (
+            `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `full_name` VARCHAR(255) NOT NULL,
+            `username` VARCHAR(100) NOT NULL,
+            `email` VARCHAR(255) NOT NULL,
+            `password` VARCHAR(255) NOT NULL,
+            `role` ENUM('admin', 'manager', 'staff') NOT NULL DEFAULT 'staff',
+            `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `uniq_users_username` (`username`),
+            UNIQUE KEY `uniq_users_email` (`email`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS `products` (
+            `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `name` VARCHAR(255) NOT NULL,
+            `sku` VARCHAR(255) DEFAULT NULL,
+            `category` VARCHAR(255) DEFAULT NULL,
+            `price` DECIMAL(10,2) NOT NULL DEFAULT '0.00',
+            `supplier_id` INT UNSIGNED DEFAULT NULL,
+            `image` VARCHAR(255) DEFAULT NULL,
+            `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `uniq_products_sku` (`sku`),
+            KEY `idx_products_supplier_id` (`supplier_id`),
+            CONSTRAINT `fk_products_supplier` FOREIGN KEY (`supplier_id`) REFERENCES `suppliers` (`id`) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS `stock_transactions` (
+            `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `product_id` INT UNSIGNED NOT NULL,
+            `type` ENUM('IN', 'OUT') NOT NULL,
+            `quantity` INT NOT NULL,
+            `reference_no` VARCHAR(100) DEFAULT NULL,
+            `notes` TEXT DEFAULT NULL,
+            `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            KEY `idx_transactions_product` (`product_id`),
+            CONSTRAINT `fk_transactions_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ");
+
+    $count = (int) $pdo->query('SELECT COUNT(*) FROM `users`')->fetchColumn();
+    if ($count === 0) {
+        $stmt = $pdo->prepare(
+            'INSERT INTO `users` (`full_name`, `username`, `email`, `password`, `role`) VALUES (?, ?, ?, ?, ?)'
+        );
+        $stmt->execute([
+            'System Administrator',
+            'admin',
+            'admin@inventory.local',
+            password_hash('Admin123!', PASSWORD_DEFAULT),
+            'admin',
+        ]);
+    }
+}
+
+function dbQuery(string $sql, array $params = []): array
+{
+    $pdo = getDatabaseConnection();
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function dbFetchOne(string $sql, array $params = []): ?array
+{
+    $rows = dbQuery($sql, $params);
+
+    return $rows[0] ?? null;
+}
+
+function dbExecute(string $sql, array $params = []): bool
+{
+    $pdo = getDatabaseConnection();
+    $stmt = $pdo->prepare($sql);
+
+    return $stmt->execute($params);
+}
+
+function requireLogin(): void
+{
+    if (session_status() !== PHP_SESSION_ACTIVE) {
+        session_start();
+    }
+
+    if (!isset($_SESSION['user_id'])) {
+        header('Location: login.php');
+        exit();
+    }
+}
+
+function requireRole(array $roles): void
+{
+    requireLogin();
+
+    $role = $_SESSION['role'] ?? 'staff';
+    if (!in_array($role, $roles, true)) {
+        header('Location: dashboard.php');
+        exit();
+    }
+}
+
+function currentUser(): array
+{
+    if (session_status() !== PHP_SESSION_ACTIVE) {
+        session_start();
+    }
+
+    return [
+        'id' => (int) ($_SESSION['user_id'] ?? 0),
+        'username' => (string) ($_SESSION['username'] ?? ''),
+        'full_name' => (string) ($_SESSION['full_name'] ?? ''),
+        'role' => (string) ($_SESSION['role'] ?? 'staff'),
+    ];
+}
+
+function formatMoney(float $value): string
+{
+    return '$' . number_format($value, 2, '.', ',');
+}
+
+function ensureJsonDatabase(): void
+{
+    getDatabaseConnection();
+}
+
+ensureJsonDatabase();
+?>
