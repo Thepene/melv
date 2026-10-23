@@ -40,7 +40,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'username' => $username,
                     'email' => $email,
                     'password' => password_hash($password, PASSWORD_DEFAULT),
-                    'role' => $role,
+                    'role' => in_array($role, ['admin', 'manager', 'staff'], true) ? $role : 'staff',
                     'created_at' => date('Y-m-d H:i:s'),
                 ];
 
@@ -56,6 +56,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'login') {
         $username = trim($_POST['username'] ?? '');
         $password = $_POST['password'] ?? '';
+        $selectedRole = trim($_POST['role'] ?? '');
 
         if ($username === '' || $password === '') {
             $error = 'Username and password are required.';
@@ -71,12 +72,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             if ($matchedUser && password_verify($password, $matchedUser['password'])) {
-                $_SESSION['user_id'] = (int) $matchedUser['id'];
-                $_SESSION['username'] = $matchedUser['username'];
-                $_SESSION['full_name'] = $matchedUser['full_name'];
-                $_SESSION['role'] = $matchedUser['role'];
-                header('Location: dashboard.php');
-                exit();
+                if ($selectedRole !== '' && $selectedRole !== ($matchedUser['role'] ?? '')) {
+                    $error = 'Selected role does not match this account.';
+                } else {
+                    $_SESSION['user_id'] = (int) $matchedUser['id'];
+                    $_SESSION['username'] = $matchedUser['username'];
+                    $_SESSION['full_name'] = $matchedUser['full_name'];
+                    $_SESSION['role'] = $matchedUser['role'];
+                    header('Location: dashboard.php');
+                    exit();
+                }
             }
 
             $error = 'Invalid username/email or password.';
@@ -273,6 +278,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <input type="hidden" name="action" value="login">
                     <input type="text" name="username" placeholder="Username or email" required>
                     <input type="password" name="password" placeholder="Password" required>
+                    <select name="role">
+                        <option value="">Select role</option>
+                        <option value="admin">Admin</option>
+                        <option value="manager">Manager</option>
+                        <option value="staff">Staff</option>
+                    </select>
                     <button type="submit">Login</button>
                 </form>
             </div>
