@@ -7,6 +7,8 @@ if (!isset($_SESSION['user_id'])) {
     exit();
 }
 
+$suppliers = loadJsonStore('suppliers', []);
+
 $productMessage = '';
 $transactionMessage = '';
 $transactionError = '';
@@ -16,7 +18,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $name = trim($_POST['name'] ?? '');
         $sku = trim($_POST['sku'] ?? '');
         $category = trim($_POST['category'] ?? '');
-        $price = trim($_POST['price'] ?? '');
+        $price = trim($_POST['price'] ?? '0');
+        $supplierId = (int) ($_POST['supplier_id'] ?? 0);
 
         if ($name === '' || $sku === '') {
             $productMessage = 'Product name and SKU are required.';
@@ -28,6 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'sku' => $sku,
                 'category' => $category,
                 'price' => $price,
+                'supplier_id' => $supplierId,
                 'created_at' => date('Y-m-d H:i:s'),
             ];
 
@@ -81,11 +85,20 @@ $productRows = [];
 
 foreach ($products as $product) {
     $productId = (int) ($product['id'] ?? 0);
+    $supplierName = '';
+    foreach ($suppliers as $supplier) {
+        if ((int) ($supplier['id'] ?? 0) === (int) ($product['supplier_id'] ?? 0)) {
+            $supplierName = (string) ($supplier['name'] ?? '');
+            break;
+        }
+    }
+
     $productRows[] = [
         'id' => $productId,
         'name' => $product['name'] ?? '',
         'sku' => $product['sku'] ?? '',
         'category' => $product['category'] ?? '',
+        'supplier_name' => $supplierName,
         'price' => $product['price'] ?? 0,
         'stock' => inventoryStockForProduct($productId, $transactions),
     ];
@@ -148,13 +161,21 @@ usort($transactionRows, static function ($a, $b) {
         .stock-red { color: red; font-weight: bold; }
         .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
         .logout-link { text-decoration: none; color: #b91c1c; font-weight: bold; }
+        .nav-links { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+        .nav-links a { color: #475569; text-decoration: none; font-weight: 700; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="topbar">
             <h1>Inventory Management System</h1>
-            <a class="logout-link" href="logout.php">Logout</a>
+            <div class="nav-links">
+                <a href="suppliers.php">Suppliers</a>
+                <?php if (($_SESSION['role'] ?? 'staff') === 'admin'): ?>
+                    <a href="admin_dashboard.php">Admin Monitoring</a>
+                <?php endif; ?>
+                <a class="logout-link" href="logout.php">Logout</a>
+            </div>
         </div>
 
         <div class="grid">
@@ -169,6 +190,12 @@ usort($transactionRows, static function ($a, $b) {
                     <input type="text" name="name" placeholder="Product Name" required>
                     <input type="text" name="sku" placeholder="SKU" required>
                     <input type="text" name="category" placeholder="Category">
+                    <select name="supplier_id">
+                        <option value="0">No supplier selected</option>
+                        <?php foreach ($suppliers as $supplier): ?>
+                            <option value="<?php echo (int) ($supplier['id'] ?? 0); ?>"><?php echo htmlspecialchars($supplier['name'] ?? ''); ?></option>
+                        <?php endforeach; ?>
+                    </select>
                     <input type="number" step="0.01" name="price" placeholder="Unit Price">
                     <button type="submit" name="add_product">Add Product</button>
                 </form>
@@ -214,6 +241,7 @@ usort($transactionRows, static function ($a, $b) {
                         <th>Name</th>
                         <th>SKU</th>
                         <th>Category</th>
+                        <th>Supplier</th>
                         <th>Unit Price</th>
                         <th>Stock</th>
                     </tr>
@@ -225,12 +253,13 @@ usort($transactionRows, static function ($a, $b) {
                                 <td><?php echo htmlspecialchars($product['name']); ?></td>
                                 <td><?php echo htmlspecialchars($product['sku']); ?></td>
                                 <td><?php echo htmlspecialchars($product['category'] ?: '-'); ?></td>
+                                <td><?php echo htmlspecialchars($product['supplier_name'] ?: '-'); ?></td>
                                 <td>$<?php echo number_format((float) $product['price'], 2); ?></td>
                                 <td class="<?php echo $product['stock'] > 0 ? 'stock-green' : 'stock-red'; ?>"><?php echo (int) $product['stock']; ?></td>
                             </tr>
                         <?php endforeach; ?>
                     <?php else: ?>
-                        <tr><td colspan="5">No products available.</td></tr>
+                        <tr><td colspan="6">No products available.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>

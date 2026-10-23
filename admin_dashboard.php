@@ -15,6 +15,18 @@ if (($_SESSION['role'] ?? 'staff') !== 'admin') {
 $notice = $_GET['notice'] ?? '';
 $error = $_GET['error'] ?? '';
 $editId = isset($_GET['edit']) ? (int) $_GET['edit'] : null;
+$searchTerm = trim($_GET['q'] ?? '');
+
+function supplierNameForProduct(int $productId, array $suppliers): string
+{
+    foreach ($suppliers as $supplier) {
+        if ((int) ($supplier['id'] ?? 0) === $productId) {
+            return (string) ($supplier['name'] ?? '');
+        }
+    }
+
+    return '';
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -25,6 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $sku = trim($_POST['sku'] ?? '');
         $category = trim($_POST['category'] ?? '');
         $price = trim($_POST['price'] ?? '0');
+        $supplierId = (int) ($_POST['supplier_id'] ?? 0);
 
         if ($name === '' || $sku === '') {
             header('Location: admin_dashboard.php?error=product_name_and_sku_required');
@@ -47,6 +60,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'sku' => $sku,
                 'category' => $category,
                 'price' => $price,
+                'supplier_id' => $supplierId,
                 'created_at' => date('Y-m-d H:i:s'),
             ];
 
@@ -63,6 +77,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'sku' => $sku,
                     'category' => $category,
                     'price' => $price,
+                    'supplier_id' => $supplierId,
                     'created_at' => $product['created_at'] ?? date('Y-m-d H:i:s'),
                 ];
                 break;
@@ -152,37 +167,89 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+$suppliers = loadJsonStore('suppliers', []);
 $products = loadJsonStore('products', []);
 $transactions = loadJsonStore('stock_transactions', []);
 
-foreach ($products as $index => $product) {
+$filteredProducts = [];
+foreach ($products as $product) {
     $productId = (int) ($product['id'] ?? 0);
-    $products[$index]['stock'] = inventoryStockForProduct($productId, $transactions);
-}
-
-$transactionRows = [];
-foreach ($transactions as $transaction) {
-    $productId = (int) ($transaction['product_id'] ?? 0);
-    $productName = '';
-
-    foreach ($products as $product) {
-        if ((int) ($product['id'] ?? 0) === $productId) {
-            $productName = $product['name'] ?? '';
+    $supplierName = '';
+    foreach ($suppliers as $supplier) {
+        if ((int) ($supplier['id'] ?? 0) === (int) ($product['supplier_id'] ?? 0)) {
+            $supplierName = (string) ($supplier['name'] ?? '');
             break;
         }
     }
 
-    $transactionRows[] = [
+    $product['stock'] = inventoryStockForProduct($productId, $transactions);
+    $product['supplier_name'] = $supplierName;
+
+    if ($searchTerm === '') {
+        $filteredProducts[] = $product;
+        continue;
+    }
+
+    $haystack = strtolower(implode(' ', [
+        (string) ($product['name'] ?? ''),
+        (string) ($product['sku'] ?? ''),
+        (string) ($product['category'] ?? ''),
+        $supplierName,
+    ]));
+
+    if (str_contains($haystack, strtolower($searchTerm))) {
+        $filteredProducts[] = $product;
+    }
+}
+
+$products = $filteredProducts;
+usort($products, static function ($a, $b) {
+    return strcasecmp(($a['name'] ?? ''), ($b['name'] ?? ''));
+});
+
+$filteredTransactions = [];
+foreach ($transactions as $transaction) {
+    $productId = (int) ($transaction['product_id'] ?? 0);
+    $productName = '';
+    $productSku = '';
+    foreach ($products as $product) {
+        if ((int) ($product['id'] ?? 0) === $productId) {
+            $productName = $product['name'] ?? '';
+            $productSku = $product['sku'] ?? '';
+            break;
+        }
+    }
+
+    $record = [
         'id' => $transaction['id'] ?? 0,
         'product_name' => $productName,
+        'product_sku' => $productSku,
         'type' => $transaction['type'] ?? 'IN',
         'quantity' => $transaction['quantity'] ?? 0,
         'reference_no' => $transaction['reference_no'] ?? '-',
         'notes' => $transaction['notes'] ?? '-',
         'created_at' => $transaction['created_at'] ?? '',
     ];
+
+    if ($searchTerm === '') {
+        $filteredTransactions[] = $record;
+        continue;
+    }
+
+    $haystack = strtolower(implode(' ', [
+        (string) ($record['product_name'] ?? ''),
+        (string) ($record['product_sku'] ?? ''),
+        (string) ($record['reference_no'] ?? ''),
+        (string) ($record['notes'] ?? ''),
+        (string) ($record['type'] ?? ''),
+    ]));
+
+    if (str_contains($haystack, strtolower($searchTerm))) {
+        $filteredTransactions[] = $record;
+    }
 }
 
+$transactionRows = $filteredTransactions;
 usort($transactionRows, static function ($a, $b) {
     return strcmp(($b['created_at'] ?? ''), ($a['created_at'] ?? ''));
 });
@@ -196,10 +263,6 @@ if ($editId !== null) {
         }
     }
 }
-
-usort($products, static function ($a, $b) {
-    return strcasecmp(($a['name'] ?? ''), ($b['name'] ?? ''));
-});
 ?>
 
 <!DOCTYPE html>
@@ -228,26 +291,32 @@ usort($products, static function ($a, $b) {
             align-items: center;
             gap: 16px;
         }
-        .nav {
+        .nav { display: flex; gap: 14px; flex-wrap: wrap; }
+        .nav a { color: #475569; text-decoration: none; font-weight: 700; }
+        .page { max-width: 1200px; margin: 24px auto; padding: 0 24px 60px; }
+        .toolbar {
             display: flex;
-            gap: 14px;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
             flex-wrap: wrap;
+            margin: 20px 0;
         }
-        .nav a {
-            color: #475569;
-            text-decoration: none;
+        .search-form { display: flex; gap: 10px; flex-wrap: wrap; }
+        .search-form input { min-width: 240px; }
+        .export-group { display: flex; gap: 8px; flex-wrap: wrap; }
+        .export-btn, .btn {
+            padding: 10px 14px;
+            border-radius: 10px;
+            border: none;
             font-weight: 700;
+            text-decoration: none;
+            display: inline-block;
+            cursor: pointer;
         }
-        .page {
-            max-width: 1200px;
-            margin: 24px auto;
-            padding: 0 24px 60px;
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: 1fr 1.2fr;
-            gap: 20px;
-        }
+        .export-btn { background: #0f172a; color: white; }
+        .btn { background: #2563eb; color: white; }
+        .grid { display: grid; grid-template-columns: 1fr 1.2fr; gap: 20px; }
         .card {
             background: white;
             border-radius: 18px;
@@ -269,23 +338,11 @@ usort($products, static function ($a, $b) {
             border: 1px solid #e2e8f0;
             box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
         }
-        .stat-box strong {
-            display: block;
-            font-size: 24px;
-            margin-top: 10px;
-        }
-        .notice {
-            border-radius: 12px;
-            padding: 12px 16px;
-            margin-bottom: 18px;
-            font-weight: 600;
-        }
+        .stat-box strong { display: block; font-size: 24px; margin-top: 10px; }
+        .notice { border-radius: 12px; padding: 12px 16px; margin-bottom: 18px; font-weight: 600; }
         .notice.success { background: #dcfce7; color: #166534; }
         .notice.error { background: #fee2e2; color: #991b1b; }
-        .form-grid {
-            display: grid;
-            gap: 12px;
-        }
+        .form-grid { display: grid; gap: 12px; }
         input, select, button, textarea {
             width: 100%;
             padding: 12px 14px;
@@ -293,41 +350,12 @@ usort($products, static function ($a, $b) {
             border: 1px solid #d1d5db;
             font-size: 14px;
         }
-        button {
-            border: none;
-            background: #2563eb;
-            color: white;
-            font-weight: 700;
-            cursor: pointer;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        th, td {
-            padding: 12px 10px;
-            border-bottom: 1px solid #e2e8f0;
-            text-align: left;
-            vertical-align: top;
-        }
-        th {
-            color: #64748b;
-            font-size: 12px;
-            text-transform: uppercase;
-        }
-        .actions {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-        .mini-btn {
-            padding: 8px 10px;
-            border-radius: 10px;
-            border: none;
-            font-weight: 700;
-            text-decoration: none;
-            display: inline-block;
-        }
+        button { border: none; background: #2563eb; color: white; font-weight: 700; cursor: pointer; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px 10px; border-bottom: 1px solid #e2e8f0; text-align: left; vertical-align: top; }
+        th { color: #64748b; font-size: 12px; text-transform: uppercase; }
+        .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .mini-btn { padding: 8px 10px; border-radius: 10px; border: none; font-weight: 700; text-decoration: none; display: inline-block; }
         .edit { background: #dbeafe; color: #1d4ed8; }
         .delete { background: #fee2e2; color: #991b1b; }
         .stock-green { color: green; font-weight: bold; }
@@ -359,7 +387,21 @@ usort($products, static function ($a, $b) {
             <div class="notice error"><?php echo htmlspecialchars(str_replace('_', ' ', $error)); ?></div>
         <?php endif; ?>
 
-        <h1>Admin Monitoring Dashboard</h1>
+        <div class="toolbar">
+            <h1 style="margin:0;">Admin Monitoring Dashboard</h1>
+            <div class="export-group">
+                <a class="export-btn" href="export_csv.php<?php echo $searchTerm !== '' ? '?q=' . urlencode($searchTerm) : ''; ?>">Export CSV</a>
+                <a class="export-btn" href="export_pdf.php<?php echo $searchTerm !== '' ? '?q=' . urlencode($searchTerm) : ''; ?>">Export PDF</a>
+            </div>
+        </div>
+
+        <form class="search-form" method="GET" action="admin_dashboard.php">
+            <input type="text" name="q" value="<?php echo htmlspecialchars($searchTerm); ?>" placeholder="Search by product, SKU, category, supplier">
+            <button class="btn" type="submit">Search</button>
+            <?php if ($searchTerm !== ''): ?>
+                <a class="btn" href="admin_dashboard.php" style="display:inline-flex;align-items:center;">Clear</a>
+            <?php endif; ?>
+        </form>
 
         <div class="stats">
             <div class="stat-box">
@@ -391,6 +433,14 @@ usort($products, static function ($a, $b) {
                     <input type="text" name="name" placeholder="Product name" value="<?php echo htmlspecialchars($productForEdit['name'] ?? ''); ?>" required>
                     <input type="text" name="sku" placeholder="SKU" value="<?php echo htmlspecialchars($productForEdit['sku'] ?? ''); ?>" required>
                     <input type="text" name="category" placeholder="Category" value="<?php echo htmlspecialchars($productForEdit['category'] ?? ''); ?>">
+                    <select name="supplier_id">
+                        <option value="0">No supplier selected</option>
+                        <?php foreach ($suppliers as $supplier): ?>
+                            <option value="<?php echo (int) ($supplier['id'] ?? 0); ?>" <?php echo (($productForEdit['supplier_id'] ?? 0) == ((int) ($supplier['id'] ?? 0))) ? 'selected' : ''; ?>>
+                                <?php echo htmlspecialchars($supplier['name'] ?? ''); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
                     <input type="number" step="0.01" name="price" placeholder="Price" value="<?php echo htmlspecialchars((string) ($productForEdit['price'] ?? '0')); ?>">
                     <button type="submit"><?php echo $productForEdit ? 'Update Product' : 'Add Product'; ?></button>
                 </form>
@@ -426,6 +476,7 @@ usort($products, static function ($a, $b) {
                         <th>Name</th>
                         <th>SKU</th>
                         <th>Category</th>
+                        <th>Supplier</th>
                         <th>Price</th>
                         <th>Stock</th>
                         <th>Actions</th>
@@ -438,11 +489,12 @@ usort($products, static function ($a, $b) {
                                 <td><?php echo htmlspecialchars($product['name'] ?? ''); ?></td>
                                 <td><?php echo htmlspecialchars($product['sku'] ?? ''); ?></td>
                                 <td><?php echo htmlspecialchars($product['category'] ?? '-'); ?></td>
+                                <td><?php echo htmlspecialchars($product['supplier_name'] ?? '-'); ?></td>
                                 <td>$<?php echo number_format((float) ($product['price'] ?? 0), 2); ?></td>
                                 <td class="<?php echo ((int) ($product['stock'] ?? 0)) > 0 ? 'stock-green' : 'stock-red'; ?>"><?php echo (int) ($product['stock'] ?? 0); ?></td>
                                 <td>
                                     <div class="actions">
-                                        <a class="mini-btn edit" href="admin_dashboard.php?edit=<?php echo (int) ($product['id'] ?? 0); ?>">Edit</a>
+                                        <a class="mini-btn edit" href="admin_dashboard.php?edit=<?php echo (int) ($product['id'] ?? 0); ?><?php echo $searchTerm !== '' ? '&q=' . urlencode($searchTerm) : ''; ?>">Edit</a>
                                         <form method="POST" style="display:inline;" onsubmit="return confirm('Delete this product and its transaction history?');">
                                             <input type="hidden" name="action" value="delete_product">
                                             <input type="hidden" name="product_id" value="<?php echo (int) ($product['id'] ?? 0); ?>">
@@ -453,7 +505,7 @@ usort($products, static function ($a, $b) {
                             </tr>
                         <?php endforeach; ?>
                     <?php else: ?>
-                        <tr><td colspan="6">No products found.</td></tr>
+                        <tr><td colspan="7">No products found.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
